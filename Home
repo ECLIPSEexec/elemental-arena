@@ -1,0 +1,225 @@
+import React, { useState, useEffect } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
+import { base44 } from '@/api/base44Client';
+import { useQueryClient } from '@tanstack/react-query';
+
+import Header from '@/components/layout/Header';
+import LoginScreen from '@/components/auth/LoginScreen';
+import HomeScreen from '@/components/game/HomeScreen';
+import MatchmakingScreen from '@/components/game/MatchmakingScreen';
+import BattleArena from '@/components/game/BattleArena';
+import { generateRandomTeam } from '@/components/game/GameData';
+
+export default function Home() {
+  const [currentUser, setCurrentUser] = useState(null);
+  const [gameState, setGameState] = useState('login'); // login, home, matchmaking, battle
+  const [playerTeam, setPlayerTeam] = useState(null);
+  const [opponentTeam, setOpponentTeam] = useState(null);
+  const [isBot, setIsBot] = useState(false);
+  const [loading, setLoading] = useState(true);
+
+  const queryClient = useQueryClient();
+
+  // Verificar sessão salva
+  useEffect(() => {
+    const savedSession = localStorage.getItem('gameSession');
+    if (savedSession) {
+      try {
+        const session = JSON.parse(savedSession);
+        setCurrentUser(session);
+        setGameState('home');
+      } catch (e) {
+        localStorage.removeItem('gameSession');
+      }
+    }
+    setLoading(false);
+  }, []);
+
+  // Atualizar status online periodicamente
+  useEffect(() => {
+    if (!currentUser) return;
+
+    const updateOnline = async () => {
+      try {
+        await base44.entities.GameUser.update(currentUser.id, {
+          is_online: true,
+          last_seen: new Date().toISOString()
+        });
+      } catch (e) {
+        console.error('Erro ao atualizar status:', e);
+      }
+    };
+
+    const interval = setInterval(updateOnline, 30000); // A cada 30s
+    updateOnline();
+
+    return () => clearInterval(interval);
+  }, [currentUser]);
+
+  // Marcar offline ao sair
+  useEffect(() => {
+    if (!currentUser) return;
+
+    const handleBeforeUnload = async () => {
+      try {
+        await base44.entities.GameUser.update(currentUser.id, {
+          is_online: false,
+          last_seen: new Date().toISOString()
+        });
+      } catch (e) {
+        console.error('Erro ao marcar offline:', e);
+      }
+    };
+
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [currentUser]);
+
+  const handleLoginSuccess = (user) => {
+    setCurrentUser(user);
+    localStorage.setItem('gameSession', JSON.stringify(user));
+    setGameState('home');
+  };
+
+  const handleLogout = async () => {
+    if (currentUser) {
+      try {
+        await base44.entities.GameUser.update(currentUser.id, {
+          is_online: false,
+          last_seen: new Date().toISOString()
+        });
+      } catch (e) {
+        console.error('Erro ao logout:', e);
+      }
+    }
+    localStorage.removeItem('gameSession');
+    setCurrentUser(null);
+    setGameState('login');
+  };
+
+  const handleStartBotBattle = () => {
+    const team = generateRandomTeam(6);
+    setPlayerTeam(team);
+    setOpponentTeam(generateRandomTeam(6));
+    setIsBot(true);
+    setGameState('battle');
+  };
+
+  const handleInvitePlayer = (targetUserId) => {
+    // Por enquanto, inicia matchmaking
+    const team = generateRandomTeam(6);
+    setPlayerTeam(team);
+    setGameState('matchmaking');
+  };
+
+  const handleMatchFound = (opponentId, oppTeam) => {
+    setOpponentTeam(oppTeam);
+    setIsBot(opponentId === 'BOT');
+    setGameState('battle');
+  };
+
+  const handleBattleEnd = async (winner) => {
+    if (!currentUser) return;
+    
+    const playerWon = winner === 'player';
+    
+    try {
+      await base44.entities.GameUser.update(currentUser.id, {
+        wins: (currentUser.wins || 0) + (playerWon ? 1 : 0),
+        losses: (currentUser.losses || 0) + (playerWon ? 0 : 1),
+        total_battles: (currentUser.total_battles || 0) + 1
+      });
+
+      // Atualizar estado local
+      setCurrentUser(prev => ({
+        ...prev,
+        wins: (prev.wins || 0) + (playerWon ? 1 : 0),
+        losses: (prev.losses || 0) + (playerWon ? 0 : 1),
+        total_battles: (prev.total_battles || 0) + 1
+      }));
+    } catch (e) {
+      console.error('Erro ao atualizar stats:', e);
+    }
+  };
+
+  const handleCancelMatchmaking = () => {
+    setGameState('home');
+    setPlayerTeam(null);
+  };
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 flex items-center justify-center">
+        <div className="text-white">Carregando...</div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900">
+      {gameState !== 'login' && (
+        <Header currentUser={currentUser} onLogout={handleLogout} />
+      )}
+
+      <AnimatePresence mode="wait">
+        {gameState === 'login' && (
+          <motion.div
+            key="login"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+          >
+            <LoginScreen onLoginSuccess={handleLoginSuccess} />
+          </motion.div>
+        )}
+
+        {gameState === 'home' && (
+          <motion.div
+            key="home"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+          >
+            <HomeScreen
+              onStartBattle={() => {}}
+              onStartBotBattle={handleStartBotBattle}
+              currentUser={currentUser}
+              onInvitePlayer={handleInvitePlayer}
+            />
+          </motion.div>
+        )}
+
+        {gameState === 'matchmaking' && (
+          <motion.div
+            key="matchmaking"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+          >
+            <MatchmakingScreen
+              onMatchFound={handleMatchFound}
+              onCancel={handleCancelMatchmaking}
+              playerTeam={playerTeam}
+            />
+          </motion.div>
+        )}
+
+        {gameState === 'battle' && playerTeam && opponentTeam && (
+          <motion.div
+            key="battle"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+          >
+            <BattleArena
+              playerTeam={playerTeam}
+              opponentTeam={opponentTeam}
+              isBot={isBot}
+              onBattleEnd={handleBattleEnd}
+            />
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+}
